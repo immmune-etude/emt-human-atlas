@@ -28,8 +28,8 @@ jobs:
               "        shader.uniforms.stateWidth = { value: textureWidth }\n        shader.uniforms.pulseTime = { value: 0 }\n        material.userData.shader = shader\n",
             ),
             (
-              "        shader.fragmentShader = `varying float partVisible; varying vec2 partHighlight;\\\n${shader.fragmentShader}`\n",
-              "        shader.fragmentShader = `uniform float pulseTime; varying float partVisible; varying vec2 partHighlight;\\\n${shader.fragmentShader}`\n",
+              "shader.fragmentShader = `varying float partVisible;",
+              "shader.fragmentShader = `uniform float pulseTime; varying float partVisible;",
             ),
             (
               "vec3(0.93, 0.42, 0.26), partHighlight.g * 0.52",
@@ -43,7 +43,7 @@ jobs:
 
           for old, new in replacements:
             if old not in text:
-              raise SystemExit(f'Expected AtlasScene source fragment not found: {old[:80]!r}')
+              raise SystemExit(f'Expected AtlasScene source fragment not found: {old[:100]!r}')
             text = text.replace(old, new, 1)
 
           scene_path.write_text(text)
