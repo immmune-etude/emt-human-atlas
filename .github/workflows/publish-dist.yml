@@ -1,0 +1,38 @@
+name: Publish built site branch
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Publish dist branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf /tmp/emt-dist
+          mkdir -p /tmp/emt-dist
+          cp -R dist/. /tmp/emt-dist/
+          git checkout --orphan deploy-dist
+          git rm -rf .
+          cp -R /tmp/emt-dist/. .
+          touch .nojekyll
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Publish built EMT Human Atlas'
+          git push origin deploy-dist --force
