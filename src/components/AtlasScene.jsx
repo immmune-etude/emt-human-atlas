@@ -184,11 +184,13 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
         shader.uniforms.partState = { value: partStateTexture }
         shader.uniforms.selectionState = { value: selectionTexture }
         shader.uniforms.stateWidth = { value: textureWidth }
+        shader.uniforms.pulseTime = { value: 0 }
+        material.userData.shader = shader
         shader.vertexShader = `attribute float partIndex; uniform sampler2D partState; uniform sampler2D selectionState; uniform float stateWidth; varying float partVisible; varying vec2 partHighlight;\n${shader.vertexShader}`
         shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvec2 stateUv = vec2((partIndex + 0.5) / stateWidth, 0.5);\nvec4 state = texture2D(partState, stateUv);\ntransformed += state.xyz;\npartVisible = state.w;\npartHighlight = texture2D(selectionState, stateUv).rg;')
-        shader.fragmentShader = `varying float partVisible; varying vec2 partHighlight;\n${shader.fragmentShader}`
+        shader.fragmentShader = `uniform float pulseTime; varying float partVisible; varying vec2 partHighlight;\n${shader.fragmentShader}`
         shader.fragmentShader = shader.fragmentShader.replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (partVisible < 0.5) discard;')
-        shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.93, 0.42, 0.26), partHighlight.g * 0.52);\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.72, 0.67), partHighlight.r * 0.82);')
+        shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.78, 0.08), partHighlight.g * (0.48 + 0.42 * (0.5 + 0.5 * sin(pulseTime * 2.15))));\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.72, 0.67), partHighlight.r * 0.82);')
       }
       materials.push(material)
       return material
@@ -402,7 +404,13 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
       animationFrame = requestAnimationFrame(animate)
       const s = latestState.current
       controls.autoRotate = Boolean(s.rotate && s.explode < 0.42)
-      controls.update(Math.min(clock.getDelta(), 0.05))
+      const delta = Math.min(clock.getDelta(), 0.05)
+      controls.update(delta)
+      const pulseTime = clock.elapsedTime
+      materials.forEach((material) => {
+        const shader = material.userData.shader
+        if (shader?.uniforms?.pulseTime) shader.uniforms.pulseTime.value = pulseTime
+      })
       updateModelState(false)
       renderer.render(scene, camera)
     }
