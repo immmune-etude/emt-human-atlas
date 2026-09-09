@@ -1,0 +1,124 @@
+name: Apply green scenario highlight and outline
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch scenario highlight rendering
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          scene_path = Path('src/components/AtlasScene.jsx')
+          text = scene_path.read_text()
+
+          # Change the scenario fill from yellow to a brighter, slower pulsating green.
+          old_fill = "diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.78, 0.08), partHighlight.g * (0.48 + 0.42 * (0.5 + 0.5 * sin(pulseTime * 2.15))));"
+          new_fill = "float scenarioPulse = 0.50 + 0.38 * (0.5 + 0.5 * sin(pulseTime * 1.9));\\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.12, 0.96, 0.40), partHighlight.g * scenarioPulse);"
+          if old_fill not in text:
+              raise SystemExit('Expected yellow scenario highlight shader was not found.')
+          text = text.replace(old_fill, new_fill, 1)
+
+          # Track outline materials separately so their pulse uniform can be updated and disposed.
+          old_materials = "    const geometries = []\\n    const materials = []\\n    const pickers = new Array(atlas.parts.length)"
+          new_materials = "    const geometries = []\\n    const materials = []\\n    const outlineMaterials = []\\n    const pickers = new Array(atlas.parts.length)"
+          if old_materials not in text:
+              raise SystemExit('Expected material declarations were not found.')
+          text = text.replace(old_materials, new_materials, 1)
+
+          # Add a real expanded back-face shell around scenario-affected structures.
+          marker = "    const materialMap = new Map(SYSTEMS.map((system) => [system.id, materialFor(system.id)]))\\n"
+          outline_factory = r'''    const outlineMaterialFor = () => {
+      const material = new THREE.MeshBasicMaterial({
+        color: '#18f36a',
+        side: THREE.BackSide,
+        transparent: true,
+        opacity: 0.96,
+        depthWrite: false,
+        toneMapped: false,
+      })
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.partState = { value: partStateTexture }
+        shader.uniforms.selectionState = { value: selectionTexture }
+        shader.uniforms.stateWidth = { value: textureWidth }
+        shader.uniforms.pulseTime = { value: 0 }
+        shader.uniforms.outlineWidth = { value: 0.008 }
+        material.userData.shader = shader
+        shader.vertexShader = `attribute float partIndex; uniform sampler2D partState; uniform sampler2D selectionState; uniform float stateWidth; uniform float outlineWidth; varying float partVisible; varying float scenarioAffected;\n${shader.vertexShader}`
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\nvec2 stateUv = vec2((partIndex + 0.5) / stateWidth, 0.5);\nvec4 state = texture2D(partState, stateUv);\nvec4 selection = texture2D(selectionState, stateUv);\ntransformed += state.xyz;\ntransformed += normalize(normal) * outlineWidth;\npartVisible = state.w;\nscenarioAffected = selection.g;',
+        )
+        shader.fragmentShader = `uniform float pulseTime; varying float partVisible; varying float scenarioAffected;\n${shader.fragmentShader}`
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <clipping_planes_fragment>',
+          '#include <clipping_planes_fragment>\nif (partVisible < 0.5 || scenarioAffected < 0.5) discard;',
+        )
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          '#include <color_fragment>\nfloat outlinePulse = 0.72 + 0.24 * (0.5 + 0.5 * sin(pulseTime * 1.9));\ndiffuseColor = vec4(vec3(0.04, 1.0, 0.30), outlinePulse);',
+        )
+      }
+      outlineMaterials.push(material)
+      return material
+    }
+
+'''
+          if marker not in text:
+              raise SystemExit('Expected material map marker was not found.')
+          text = text.replace(marker, outline_factory + marker + "    const outlineMaterialMap = new Map(SYSTEMS.map((system) => [system.id, outlineMaterialFor(system.id)]))\\n", 1)
+
+          old_mesh = "        const mesh = new THREE.Mesh(merged, materialMap.get(systemId))\\n        mesh.frustumCulled = false\\n        scene.add(mesh)"
+          new_mesh = "        const mesh = new THREE.Mesh(merged, materialMap.get(systemId))\\n        mesh.frustumCulled = false\\n        scene.add(mesh)\\n\\n        const outlineMesh = new THREE.Mesh(merged, outlineMaterialMap.get(systemId))\\n        outlineMesh.frustumCulled = false\\n        outlineMesh.renderOrder = 2\\n        scene.add(outlineMesh)"
+          if old_mesh not in text:
+              raise SystemExit('Expected merged anatomy mesh block was not found.')
+          text = text.replace(old_mesh, new_mesh, 1)
+
+          old_pulse_loop = "      materials.forEach((material) => {\\n        const shader = material.userData.shader\\n        if (shader?.uniforms?.pulseTime) shader.uniforms.pulseTime.value = pulseTime\\n      })"
+          new_pulse_loop = "      ;[...materials, ...outlineMaterials].forEach((material) => {\\n        const shader = material.userData.shader\\n        if (shader?.uniforms?.pulseTime) shader.uniforms.pulseTime.value = pulseTime\\n      })"
+          if old_pulse_loop not in text:
+              raise SystemExit('Expected pulse update loop was not found.')
+          text = text.replace(old_pulse_loop, new_pulse_loop, 1)
+
+          old_cleanup = "      materials.forEach((material) => material.dispose())"
+          new_cleanup = "      materials.forEach((material) => material.dispose())\\n      outlineMaterials.forEach((material) => material.dispose())"
+          if old_cleanup not in text:
+              raise SystemExit('Expected material cleanup was not found.')
+          text = text.replace(old_cleanup, new_cleanup, 1)
+
+          scene_path.write_text(text)
+
+          app_path = Path('src/App.jsx')
+          app = app_path.read_text()
+          old_copy = 'Scenario-affected anatomy is highlighted with a slow yellow pulse.'
+          if old_copy not in app:
+              old_copy = 'Scenario-affected anatomy is highlighted in warm orange.'
+          if old_copy not in app:
+              raise SystemExit('Expected anatomy highlight inspector copy was not found.')
+          app_path.write_text(app.replace(old_copy, 'Scenario-affected anatomy pulses green with a bright outline for fast visual recognition.', 1))
+          PY
+
+      - name: Validate production build
+        run: |
+          npm install
+          npm run build
+
+      - name: Commit source update
+        run: |
+          rm .github/workflows/apply-green-outline.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/components/AtlasScene.jsx src/App.jsx .github/workflows/apply-green-outline.yml
+          git commit -m "Use pulsating green scenario highlights with outline"
+          git push origin main
