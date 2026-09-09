@@ -164,6 +164,7 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
 
     const geometries = []
     const materials = []
+    const outlineMaterials = []
     const pickers = new Array(atlas.parts.length)
     const centers = atlas.parts.map((part) => new THREE.Vector3().fromArray(part.bounds[0]).add(new THREE.Vector3().fromArray(part.bounds[1])).multiplyScalar(0.5))
     const bounds = atlas.parts.map((part) => new THREE.Box3(new THREE.Vector3().fromArray(part.bounds[0]), new THREE.Vector3().fromArray(part.bounds[1])))
@@ -190,13 +191,49 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
         shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvec2 stateUv = vec2((partIndex + 0.5) / stateWidth, 0.5);\nvec4 state = texture2D(partState, stateUv);\ntransformed += state.xyz;\npartVisible = state.w;\npartHighlight = texture2D(selectionState, stateUv).rg;')
         shader.fragmentShader = `uniform float pulseTime; varying float partVisible; varying vec2 partHighlight;\n${shader.fragmentShader}`
         shader.fragmentShader = shader.fragmentShader.replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (partVisible < 0.5) discard;')
-        shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.78, 0.08), partHighlight.g * (0.48 + 0.42 * (0.5 + 0.5 * sin(pulseTime * 2.15))));\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.72, 0.67), partHighlight.r * 0.82);')
+        shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\nfloat scenarioPulse = 0.50 + 0.38 * (0.5 + 0.5 * sin(pulseTime * 1.9));\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.12, 0.96, 0.40), partHighlight.g * scenarioPulse);\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.72, 0.67), partHighlight.r * 0.82);')
       }
       materials.push(material)
       return material
     }
 
+    const outlineMaterialFor = () => {
+      const material = new THREE.MeshBasicMaterial({
+        color: '#18f36a',
+        side: THREE.BackSide,
+        transparent: true,
+        opacity: 0.96,
+        depthWrite: false,
+        toneMapped: false,
+      })
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.partState = { value: partStateTexture }
+        shader.uniforms.selectionState = { value: selectionTexture }
+        shader.uniforms.stateWidth = { value: textureWidth }
+        shader.uniforms.pulseTime = { value: 0 }
+        shader.uniforms.outlineWidth = { value: 0.008 }
+        material.userData.shader = shader
+        shader.vertexShader = `attribute float partIndex; uniform sampler2D partState; uniform sampler2D selectionState; uniform float stateWidth; uniform float outlineWidth; varying float partVisible; varying float scenarioAffected;\n${shader.vertexShader}`
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\nvec2 stateUv = vec2((partIndex + 0.5) / stateWidth, 0.5);\nvec4 state = texture2D(partState, stateUv);\nvec4 selection = texture2D(selectionState, stateUv);\ntransformed += state.xyz;\ntransformed += normalize(normal) * outlineWidth;\npartVisible = state.w;\nscenarioAffected = selection.g;',
+        )
+        shader.fragmentShader = `uniform float pulseTime; varying float partVisible; varying float scenarioAffected;\n${shader.fragmentShader}`
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <clipping_planes_fragment>',
+          '#include <clipping_planes_fragment>\nif (partVisible < 0.5 || scenarioAffected < 0.5) discard;',
+        )
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          '#include <color_fragment>\nfloat outlinePulse = 0.72 + 0.24 * (0.5 + 0.5 * sin(pulseTime * 1.9));\ndiffuseColor = vec4(vec3(0.04, 1.0, 0.30), outlinePulse);',
+        )
+      }
+      outlineMaterials.push(material)
+      return material
+    }
+
     const materialMap = new Map(SYSTEMS.map((system) => [system.id, materialFor(system.id)]))
+    const outlineMaterialMap = new Map(SYSTEMS.map((system) => [system.id, outlineMaterialFor(system.id)]))
 
     const loadChunk = async (chunkIndex) => {
       const chunk = atlas.chunks[chunkIndex]
@@ -233,6 +270,11 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
         const mesh = new THREE.Mesh(merged, materialMap.get(systemId))
         mesh.frustumCulled = false
         scene.add(mesh)
+
+        const outlineMesh = new THREE.Mesh(merged, outlineMaterialMap.get(systemId))
+        outlineMesh.frustumCulled = false
+        outlineMesh.renderOrder = 2
+        scene.add(outlineMesh)
       })
 
       loadedChunks += 1
@@ -407,7 +449,7 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
       const delta = Math.min(clock.getDelta(), 0.05)
       controls.update(delta)
       const pulseTime = clock.elapsedTime
-      materials.forEach((material) => {
+      ;[...materials, ...outlineMaterials].forEach((material) => {
         const shader = material.userData.shader
         if (shader?.uniforms?.pulseTime) shader.uniforms.pulseTime.value = pulseTime
       })
@@ -431,6 +473,7 @@ export default function AtlasScene({ atlas, state, onSelect, onProgress, onError
       selectionTexture.dispose()
       geometries.forEach((geometry) => geometry.dispose())
       materials.forEach((material) => material.dispose())
+      outlineMaterials.forEach((material) => material.dispose())
       pickers.forEach((picker) => picker?.material?.dispose?.())
       stageMaterial.dispose()
       ring.geometry.dispose()
